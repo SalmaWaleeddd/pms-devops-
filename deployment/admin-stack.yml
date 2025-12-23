@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  admin-frontend:
+    image: salmawaleedd/pms-admin-frontend:latest
+    ports:
+      - "4200:80"  # Direct port mapping
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
