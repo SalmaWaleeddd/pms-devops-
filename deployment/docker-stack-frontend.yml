@@ -1,31 +1,30 @@
 version: '3.8'
 
 services:
+  # Traffic Director
+  nginx-proxy:
+    image: nginx:alpine
+    ports:
+      - "80:80"  # Single public port
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    deploy:
+      replicas: 2  # Two Nginx instances for high availability
+
+  # Admin App (internal only)
   admin-frontend:
     image: salmawaleedd/pms-admin-frontend:latest
-    ports:
-      - "4200:80"
-    networks:
-      - frontend-net
+    # NO ports - hidden inside Swarm
     deploy:
       replicas: 2
-      update_config:
-        parallelism: 1
-        delay: 10s
 
+  # Parker App (internal only)
   parker-frontend:
     image: salmawaleedd/pms-parker-frontend:latest
-    ports:
-      - "3000:80"
-    networks:
-      - frontend-net
+    # NO ports - hidden inside Swarm
     deploy:
       replicas: 2
-      update_config:
-        parallelism: 1
-        delay: 10s
 
 networks:
-  frontend-net:
+  default:  # All services automatically connect
     driver: overlay
-    attachable: true
