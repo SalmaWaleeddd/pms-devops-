@@ -7,7 +7,7 @@ services:
     ports:
       - "80:80"  # Single public port
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     deploy:
       replicas: 2  # Two Nginx instances for high availability
 
