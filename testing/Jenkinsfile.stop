@@ -1,0 +1,27 @@
+// Stop Pipeline - Stops all running services
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Stop Services') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "==========================================="
+                        echo "  PMS Backend - Stopping All Services"
+                        echo "==========================================="
+
+                        docker rm -f kafka-ui 2>/dev/null || true
+                        docker compose -f docker-compose.ci.yml down || true
+
+                        echo ""
+                        echo "==========================================="
+                        echo "  All Services Stopped!"
+                        echo "==========================================="
+                    '''
+                }
+            }
+        }
+    }
+}
