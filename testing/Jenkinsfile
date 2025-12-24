@@ -61,14 +61,27 @@ pipeline {
                         # Step 5: Start all services
                         echo "[5/6] Starting backend and frontend services..."
                         docker compose -f docker-compose.ci.yml up -d
-                        echo "Waiting 15 seconds for services to initialize..."
-                        sleep 15
+
+                        # Wait for backend services to be healthy
+                        echo "Waiting for backend services to be ready..."
+                        for i in $(seq 1 60); do
+                            BOOKING_OK=$(curl -sf http://localhost:5001/api/booking > /dev/null 2>&1 && echo "1" || echo "0")
+                            INVOICE_OK=$(curl -sf http://localhost:5002/api/invoice > /dev/null 2>&1 && echo "1" || echo "0")
+                            SITE_OK=$(curl -sf http://localhost:5003/api/site > /dev/null 2>&1 && echo "1" || echo "0")
+
+                            if [ "$BOOKING_OK" = "1" ] && [ "$INVOICE_OK" = "1" ] && [ "$SITE_OK" = "1" ]; then
+                                echo "All backend services are ready!"
+                                break
+                            fi
+                            echo "Waiting for services... ($i/60) - Booking:$BOOKING_OK Invoice:$INVOICE_OK Site:$SITE_OK"
+                            sleep 5
+                        done
 
                         # Step 6: Start Kafka UI
                         echo "[6/6] Starting Kafka UI..."
                         docker rm -f kafka-ui 2>/dev/null || true
                         docker run -d --name kafka-ui \
-                          --network pms-network \
+                          --network testing_pms-network \
                           -p 8085:8080 \
                           -e KAFKA_CLUSTERS_0_NAME=pms-kafka \
                           -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \
