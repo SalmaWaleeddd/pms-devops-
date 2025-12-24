@@ -2,37 +2,106 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_COMPOSE_VERSION = '2.0'
+        COMPOSE_FILE = 'testing/docker-compose.testing.yml'
     }
 
     stages {
         stage('Start Services') {
             steps {
                 dir('testing') {
-                    sh 'chmod +x start-all.sh && ./start-all.sh'
+                    sh '''
+                        echo "==========================================="
+                        echo "  PMS Backend - Starting All Services"
+                        echo "==========================================="
+
+                        # Step 1: Start infrastructure (SQL Server, Kafka, Zookeeper)
+                        echo "[1/6] Starting infrastructure services..."
+                        docker compose -f docker-compose.testing.yml up -d zookeeper sqlserver
+                        sleep 5
+                        docker compose -f docker-compose.testing.yml up -d kafka
+
+                        # Step 2: Wait for Kafka to be ready
+                        echo "[2/6] Waiting for Kafka to be ready..."
+                        for i in $(seq 1 30); do
+                            if docker exec pms-kafka kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
+                                echo "Kafka is ready!"
+                                break
+                            fi
+                            echo "Waiting... ($i/30)"
+                            sleep 2
+                        done
+
+                        # Step 3: Create Kafka topics
+                        echo "[3/6] Creating Kafka topics..."
+                        docker exec pms-kafka kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic site-created exists"
+                        docker exec pms-kafka kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic booking-created exists"
+                        docker exec pms-kafka kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic ticket-created exists"
+                        docker exec pms-kafka kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic invoice-created exists"
+
+                        # Step 4: Wait for SQL Server and create databases
+                        echo "[4/6] Waiting for SQL Server..."
+                        for i in $(seq 1 30); do
+                            if docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "SELECT 1" 2>/dev/null; then
+                                echo "SQL Server is ready!"
+                                break
+                            fi
+                            echo "Waiting for SQL Server... ($i/30)"
+                            sleep 2
+                        done
+
+                        # Create databases
+                        docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Site') CREATE DATABASE PMS_Site;" 2>/dev/null || true
+                        docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Booking') CREATE DATABASE PMS_Booking;" 2>/dev/null || true
+                        docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Invoice') CREATE DATABASE PMS_Invoice;" 2>/dev/null || true
+
+                        # Run database migrations
+                        echo "Creating database tables..."
+                        cat init-db.sql | docker exec -i pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C > /dev/null 2>&1 || true
+
+                        # Step 5: Start all services
+                        echo "[5/6] Starting backend and frontend services..."
+                        docker compose -f docker-compose.testing.yml up -d
+                        echo "Waiting 15 seconds for services to initialize..."
+                        sleep 15
+
+                        # Step 6: Start Kafka UI
+                        echo "[6/6] Starting Kafka UI..."
+                        docker rm -f kafka-ui 2>/dev/null || true
+                        docker run -d --name kafka-ui \
+                          --network testing_pms-network \
+                          -p 8085:8080 \
+                          -e KAFKA_CLUSTERS_0_NAME=pms-kafka \
+                          -e KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092 \
+                          provectuslabs/kafka-ui:latest || true
+
+                        echo "Services started!"
+                    '''
                 }
-                // Wait for services to be ready
-                sh '''
-                    echo "Waiting for services to start..."
-                    sleep 30
-                '''
             }
         }
 
         stage('Health Checks') {
             steps {
                 sh '''
+                    echo "==========================================="
+                    echo "  Health Checks"
+                    echo "==========================================="
+
                     # Verify containers are running
                     docker ps | grep pms
 
                     # Test API endpoints
+                    echo "Testing APIs..."
                     curl -f http://localhost:5001/api/booking || exit 1
                     curl -f http://localhost:5002/api/invoice || exit 1
                     curl -f http://localhost:5003/api/site || exit 1
 
                     # Check frontends are accessible
+                    echo "Testing Frontends..."
                     curl -f http://localhost:4200 || exit 1
                     curl -f http://localhost:4201 || exit 1
+
+                    echo "All health checks passed!"
                 '''
             }
         }
@@ -40,6 +109,10 @@ pipeline {
         stage('API Tests') {
             steps {
                 sh '''
+                    echo "==========================================="
+                    echo "  API Tests"
+                    echo "==========================================="
+
                     # Test Site API - Create site
                     curl -X POST http://localhost:5003/api/site \
                         -H "Content-Type: application/json" \
@@ -51,6 +124,8 @@ pipeline {
 
                     # Test Invoice API
                     curl -f http://localhost:5002/api/invoice || exit 1
+
+                    echo "API tests passed!"
                 '''
             }
         }
@@ -58,17 +133,22 @@ pipeline {
         stage('Kafka Verification') {
             steps {
                 sh '''
+                    echo "==========================================="
+                    echo "  Kafka Verification"
+                    echo "==========================================="
+
                     # List Kafka topics
                     docker exec pms-kafka kafka-topics --list --bootstrap-server localhost:9092
 
                     # Verify required topics exist
                     docker exec pms-kafka kafka-topics --list --bootstrap-server localhost:9092 | grep -E "site-created|booking-created|invoice-created"
+
+                    echo "Kafka verification passed!"
                 '''
             }
         }
 
         stage('E2E Tests') {
-            // Optional: Add Playwright/Cypress tests for UI
             steps {
                 echo 'Run E2E tests here (Playwright/Cypress)'
                 // sh 'npx playwright test'
@@ -79,7 +159,13 @@ pipeline {
     post {
         always {
             dir('testing') {
-                sh 'chmod +x stop-all.sh && ./stop-all.sh || true'
+                sh '''
+                    echo "==========================================="
+                    echo "  Stopping All Services"
+                    echo "==========================================="
+                    docker rm -f kafka-ui 2>/dev/null || true
+                    docker compose -f docker-compose.testing.yml down || true
+                '''
             }
         }
         failure {
