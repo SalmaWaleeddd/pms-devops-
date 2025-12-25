@@ -1,0 +1,186 @@
+version: "3.8"
+
+services:
+  # Infrastructure Services
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - pms-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - pms-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: YourStrong@Passw0rd
+      MSSQL_PID: Developer
+    networks:
+      - pms-network
+    volumes:
+      - sql_data:/var/opt/mssql
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == manager
+
+  # Backend Microservices
+
+  booking-service:
+    image: amaleltelabany/pms-booking-service:latest
+    ports:
+      - "5001:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__ClientId: BookingService
+      Kafka__Consumer__GroupId: BookingServiceGroup
+      ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=PMS_Booking;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;MultipleActiveResultSets=True;"
+    networks:
+      - pms-network
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        delay: 10s
+
+  invoice-service:
+    image: amaleltelabany/pms-invoice-service:latest
+    ports:
+      - "5002:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__ClientId: InvoiceService
+      Kafka__Consumer__GroupId: InvoiceServiceGroup
+      ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=PMS_Invoice;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;MultipleActiveResultSets=True;"
+    networks:
+      - pms-network
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        delay: 10s
+
+  site-service:
+    image: amaleltelabany/pms-site-service:latest
+    ports:
+      - "5003:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 8080
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__ClientId: SiteService
+      Kafka__Consumer__GroupId: SiteServiceGroup
+      ConnectionStrings__DefaultConnection: "Server=sqlserver;Database=PMS_Site;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;MultipleActiveResultSets=True;"
+    networks:
+      - pms-network
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        delay: 10s
+
+  # Frontend Applications
+
+  admin-frontend:
+    image: amaleltelabany/pms-admin-frontend:latest
+    ports:
+      - "4200:80"
+    networks:
+      - pms-network
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  parker-frontend:
+    image: amaleltelabany/pms-parker-frontend:1
+    ports:
+      - "4201:80"
+    networks:
+      - pms-network
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+
+  # Monitoring
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: pms-kafka
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - pms-network
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # Visualizer (optional - shows swarm cluster status)
+  visualizer:
+    image: dockersamples/visualizer:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - pms-network
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+networks:
+  pms-network:
+    driver: overlay
+    attachable: true
+
+volumes:
+  sql_data:

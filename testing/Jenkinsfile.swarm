@@ -1,0 +1,192 @@
+// Docker Swarm Deployment Pipeline
+// Deploys the PMS stack to a Docker Swarm cluster
+
+pipeline {
+    agent any
+
+    environment {
+        STACK_NAME = 'pms'
+        SWARM_MANAGER = credentials('swarm-manager-ssh')  // Configure in Jenkins credentials
+    }
+
+    stages {
+        stage('Prepare') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "==========================================="
+                        echo "  PMS - Docker Swarm Deployment"
+                        echo "==========================================="
+                        echo ""
+                        echo "Stack Name: ${STACK_NAME}"
+                    '''
+                }
+            }
+        }
+
+        stage('Initialize Databases') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "Checking if stack is already running..."
+                        if docker stack ls | grep -q "${STACK_NAME}"; then
+                            echo "Stack already exists, skipping DB init"
+                        else
+                            echo "First deployment - will initialize databases after services start"
+                        fi
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy Stack') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "Deploying stack to Docker Swarm..."
+                        docker stack deploy -c docker-stack.yml ${STACK_NAME}
+
+                        echo ""
+                        echo "Waiting for services to start..."
+                        sleep 30
+                    '''
+                }
+            }
+        }
+
+        stage('Wait for Infrastructure') {
+            steps {
+                sh '''
+                    echo "Waiting for SQL Server to be ready..."
+                    for i in $(seq 1 60); do
+                        # Find the SQL Server container
+                        SQL_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_sqlserver" --format "{{.ID}}" | head -1)
+                        if [ -n "$SQL_CONTAINER" ]; then
+                            if docker exec $SQL_CONTAINER /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "SELECT 1" 2>/dev/null; then
+                                echo "SQL Server is ready!"
+                                break
+                            fi
+                        fi
+                        echo "Waiting for SQL Server... ($i/60)"
+                        sleep 5
+                    done
+
+                    echo "Waiting for Kafka to be ready..."
+                    for i in $(seq 1 30); do
+                        KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
+                        if [ -n "$KAFKA_CONTAINER" ]; then
+                            if docker exec $KAFKA_CONTAINER kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
+                                echo "Kafka is ready!"
+                                break
+                            fi
+                        fi
+                        echo "Waiting for Kafka... ($i/30)"
+                        sleep 2
+                    done
+                '''
+            }
+        }
+
+        stage('Setup Databases') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "Database creation and migrations are handled by the backend services on startup"
+                        echo "Skipping manual database setup..."
+                    '''
+                }
+            }
+        }
+
+        stage('Create Kafka Topics') {
+            steps {
+                sh '''
+                    KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
+
+                    echo "Creating Kafka topics..."
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    echo "==========================================="
+                    echo "  Stack Services Status"
+                    echo "==========================================="
+                    docker stack services ${STACK_NAME}
+
+                    echo ""
+                    echo "==========================================="
+                    echo "  Running Containers"
+                    echo "==========================================="
+                    docker ps --filter "name=${STACK_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                '''
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sh '''
+                    echo "Waiting for backend services..."
+                    sleep 30
+
+                    FRONTEND_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_admin-frontend" --format "{{.ID}}" | head -1)
+
+                    echo "Testing API endpoints..."
+                    for i in $(seq 1 30); do
+                        BOOKING_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://booking-service:8080/api/booking 2>&1 && echo "1" || echo "0")
+                        INVOICE_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://invoice-service:8080/api/invoice 2>&1 && echo "1" || echo "0")
+                        SITE_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://site-service:8080/api/site 2>&1 && echo "1" || echo "0")
+
+                        if [ "$BOOKING_OK" = "1" ] && [ "$INVOICE_OK" = "1" ] && [ "$SITE_OK" = "1" ]; then
+                            echo "All services are healthy!"
+                            break
+                        fi
+                        echo "Waiting... ($i/30)"
+                        sleep 5
+                    done
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            sh '''
+                echo ""
+                echo "==========================================="
+                echo "  DEPLOYMENT SUCCESSFUL!"
+                echo "==========================================="
+                echo ""
+                echo "Access URLs (replace <VM_IP> with your server IP):"
+                echo "  Admin Frontend:  http://<VM_IP>:4200"
+                echo "  Parker Frontend: http://<VM_IP>:4201"
+                echo "  Kafka UI:        http://<VM_IP>:8085"
+                echo "  Swarm Visualizer: http://<VM_IP>:8080"
+                echo ""
+                echo "API Endpoints:"
+                echo "  Booking API:     http://<VM_IP>:5001/api/booking"
+                echo "  Invoice API:     http://<VM_IP>:5002/api/invoice"
+                echo "  Site API:        http://<VM_IP>:5003/api/site"
+                echo ""
+                echo "Useful commands:"
+                echo "  docker stack services pms    # View services"
+                echo "  docker stack ps pms          # View tasks"
+                echo "  docker stack rm pms          # Remove stack"
+                echo ""
+            '''
+        }
+        failure {
+            sh '''
+                echo "=== Deployment Failed ==="
+                docker stack services ${STACK_NAME} || true
+                docker stack ps ${STACK_NAME} --no-trunc || true
+            '''
+        }
+    }
+}

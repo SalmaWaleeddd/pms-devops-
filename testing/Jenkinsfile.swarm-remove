@@ -1,0 +1,42 @@
+// Docker Swarm - Remove Stack Pipeline
+
+pipeline {
+    agent any
+
+    environment {
+        STACK_NAME = 'pms'
+    }
+
+    stages {
+        stage('Remove Stack') {
+            steps {
+                sh '''
+                    echo "==========================================="
+                    echo "  Removing PMS Stack from Docker Swarm"
+                    echo "==========================================="
+
+                    docker stack rm ${STACK_NAME}
+
+                    echo "Waiting for services to stop..."
+                    sleep 10
+
+                    echo ""
+                    echo "Stack removed successfully!"
+                '''
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sh '''
+                    echo "Pruning unused resources..."
+                    docker system prune -f || true
+
+                    echo ""
+                    echo "Current stacks:"
+                    docker stack ls
+                '''
+            }
+        }
+    }
+}
