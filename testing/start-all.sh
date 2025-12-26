@@ -48,8 +48,8 @@ docker exec pms-kafka kafka-topics --create --topic invoice-created --partitions
 echo -e "${GREEN}Done!${NC}"
 echo ""
 
-# Step 4: Wait for SQL Server and create databases
-echo -e "${YELLOW}[4/6] Waiting for SQL Server and creating databases...${NC}"
+# Step 4: Wait for SQL Server to be ready
+echo -e "${YELLOW}[4/6] Waiting for SQL Server...${NC}"
 for i in {1..30}; do
     if docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "SELECT 1" &>/dev/null; then
         echo "  SQL Server is ready!"
@@ -59,15 +59,8 @@ for i in {1..30}; do
     sleep 2
 done
 
-# Create databases if they don't exist
-docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Site') CREATE DATABASE PMS_Site;" 2>/dev/null
-docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Booking') CREATE DATABASE PMS_Booking;" 2>/dev/null
-docker exec pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'PMS_Invoice') CREATE DATABASE PMS_Invoice;" 2>/dev/null
-
-# Run database migrations (create tables)
-echo "  Creating database tables..."
-cat "$SCRIPT_DIR/init-db.sql" | docker exec -i pms-sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C > /dev/null 2>&1
-echo -e "${GREEN}Databases and tables ready!${NC}"
+# Note: Database creation and migrations are handled by the backend services on startup
+echo -e "${GREEN}SQL Server ready! (Databases will be created by backend services)${NC}"
 echo ""
 
 # Step 5: Start backend services and frontends
