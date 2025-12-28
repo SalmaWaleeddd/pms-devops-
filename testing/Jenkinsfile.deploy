@@ -84,10 +84,16 @@ pipeline {
                     echo "Waiting for Kafka..."
                     for i in $(seq 1 60); do
                         KAFKA=$(docker ps --filter "name=${STACK_NAME}_kafka" -q | head -1)
-                        if [ -n "$KAFKA" ] && docker exec $KAFKA kafka-broker-api-versions --bootstrap-server localhost:9092 2>/dev/null; then
-                            echo "Kafka ready!"
-                            break
+                        if [ -n "$KAFKA" ]; then
+                            # Try nc first, then try kafka-topics
+                            if docker exec $KAFKA nc -z localhost 9092 2>/dev/null || docker exec $KAFKA bash -c "echo > /dev/tcp/localhost/9092" 2>/dev/null; then
+                                echo "Kafka port is open, waiting a bit more for broker to initialize..."
+                                sleep 10
+                                echo "Kafka ready!"
+                                break
+                            fi
                         fi
+                        echo "Waiting for Kafka... ($i/60)"
                         sleep 5
                     done
 
@@ -107,14 +113,29 @@ pipeline {
         stage('Create Kafka Topics') {
             steps {
                 sh '''
-                    KAFKA=$(docker ps --filter "name=${STACK_NAME}_kafka" -q | head -1)
-                    docker exec $KAFKA kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
-                    docker exec $KAFKA kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
-                    docker exec $KAFKA kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
-                    docker exec $KAFKA kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
-                    echo "Topics created!"
+                    echo "Getting Kafka container (cp-kafka image)..."
+                    KAFKA=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}\t{{.Image}}" | grep "cp-kafka" | cut -f1 | head -1)
+
+                    if [ -z "$KAFKA" ]; then
+                        echo "ERROR: Could not find Kafka container"
+                        exit 1
+                    fi
+
+                    echo "Found Kafka container: $KAFKA"
+                    echo "Creating Kafka topics..."
+
+                    docker exec $KAFKA kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || echo "site-created topic already exists or auto-created"
+                    docker exec $KAFKA kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || echo "booking-created topic already exists or auto-created"
+                    docker exec $KAFKA kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || echo "ticket-created topic already exists or auto-created"
+                    docker exec $KAFKA kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || echo "invoice-created topic already exists or auto-created"
+
+                    echo ""
+                    echo "Verifying topics..."
                     docker exec $KAFKA kafka-topics --list --bootstrap-server localhost:9092
-                    sleep 10
+
+                    echo ""
+                    echo "Topics ready! Waiting 5s for propagation..."
+                    sleep 5
                 '''
             }
         }
