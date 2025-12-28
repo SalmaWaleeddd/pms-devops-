@@ -72,16 +72,16 @@ pipeline {
                     done
 
                     echo "Waiting for Kafka to be ready..."
-                    for i in $(seq 1 30); do
+                    for i in $(seq 1 60); do
                         KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
                         if [ -n "$KAFKA_CONTAINER" ]; then
-                            if docker exec $KAFKA_CONTAINER /bin/kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
+                            if docker exec $KAFKA_CONTAINER kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
                                 echo "Kafka is ready!"
                                 break
                             fi
                         fi
-                        echo "Waiting for Kafka... ($i/30)"
-                        sleep 2
+                        echo "Waiting for Kafka... ($i/60)"
+                        sleep 3
                     done
                 '''
             }
@@ -104,10 +104,13 @@ pipeline {
                     KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
 
                     echo "Creating Kafka topics..."
-                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists 2>/dev/null || echo "topic exists"
+
+                    echo "Listing Kafka topics..."
+                    docker exec $KAFKA_CONTAINER kafka-topics --list --bootstrap-server localhost:9092
                 '''
             }
         }
@@ -176,20 +179,20 @@ pipeline {
                 echo "  DEPLOYMENT SUCCESSFUL!"
                 echo "==========================================="
                 echo ""
-                echo "Access URLs (replace <VM_IP> with your server IP):"
-                echo "  Admin Frontend:   http://<VM_IP>:4200"
-                echo "  Parker Frontend:  http://<VM_IP>:4201"
+                echo "Access URLs:"
+                echo "  Admin Frontend:   http://localhost:4200"
+                echo "  Parker Frontend:  http://localhost:4201"
                 echo ""
                 echo "Monitoring:"
-                echo "  Kibana:           http://<VM_IP>:5601"
-                echo "  Elasticsearch:    http://<VM_IP>:9200"
-                echo "  Kafka UI:         http://<VM_IP>:8085"
-                echo "  Swarm Visualizer: http://<VM_IP>:9080"
+                echo "  Kibana:           http://localhost:5601"
+                echo "  Elasticsearch:    http://localhost:9200"
+                echo "  Kafka UI:         http://localhost:8085"
+                echo "  Swarm Visualizer: http://localhost:9080"
                 echo ""
                 echo "API Endpoints:"
-                echo "  Booking API:      http://<VM_IP>:5001/api/booking"
-                echo "  Invoice API:      http://<VM_IP>:5002/api/invoice"
-                echo "  Site API:         http://<VM_IP>:5003/api/site"
+                echo "  Booking API:      http://localhost:5001/api/booking"
+                echo "  Invoice API:      http://localhost:5002/api/invoice"
+                echo "  Site API:         http://localhost:5003/api/site"
                 echo ""
                 echo "Useful commands:"
                 echo "  docker stack services pms    # View services"
