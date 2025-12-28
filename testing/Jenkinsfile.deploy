@@ -9,19 +9,9 @@ pipeline {
         STACK_NAME = 'pms'
         DOCKER_HUB_BACKEND = 'amaleltelabany'
         DOCKER_HUB_FRONTEND = 'salmawaleedd'
-        DEVOPS_REPO = 'https://github.com/your-user/pms-devops.git'  // Update this
     }
 
     stages {
-        stage('Checkout DevOps Repo') {
-            steps {
-                // Get the docker-stack.yml file
-                git branch: 'main',
-                    url: "${DEVOPS_REPO}"
-                    // Add credentialsId if private: credentialsId: 'github-credentials'
-            }
-        }
-
         stage('Pull All Images') {
             parallel {
                 stage('Pull Backend Images') {
