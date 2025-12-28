@@ -125,7 +125,22 @@ pipeline {
                     echo "Starting backend services (infrastructure is ready)..."
                     docker service scale ${STACK_NAME}_booking-service=1 ${STACK_NAME}_invoice-service=1 ${STACK_NAME}_site-service=1 --detach
                     echo "Services starting, waiting for them to initialize..."
-                    sleep 60
+                    sleep 30
+
+                    echo ""
+                    echo "Service status after scale:"
+                    docker stack services ${STACK_NAME} | grep -E "booking|invoice|site"
+                    echo ""
+
+                    echo "Waiting additional 30s for containers to start..."
+                    sleep 30
+
+                    echo "Container status:"
+                    docker ps -a --filter "name=${STACK_NAME}_booking" --filter "name=${STACK_NAME}_invoice" --filter "name=${STACK_NAME}_site" --format "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+
+                    echo ""
+                    echo "Checking for failed tasks:"
+                    docker stack ps ${STACK_NAME} --no-trunc | grep -E "booking|invoice|site" | head -10
                 '''
             }
         }
@@ -136,10 +151,22 @@ pipeline {
                     echo "=========================================="
                     echo "  Health Check"
                     echo "=========================================="
+
+                    echo "Checking service status..."
+                    docker stack services ${STACK_NAME}
+                    echo ""
+
+                    echo "Checking backend container status..."
+                    docker ps -a --filter "name=${STACK_NAME}_booking" --filter "name=${STACK_NAME}_invoice" --filter "name=${STACK_NAME}_site" --format "table {{.Names}}\t{{.Status}}"
+                    echo ""
+
                     for i in $(seq 1 20); do
-                        BOOKING=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/api/booking 2>/dev/null || echo "000")
-                        INVOICE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5002/api/invoice 2>/dev/null || echo "000")
-                        SITE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5003/api/site 2>/dev/null || echo "000")
+                        BOOKING=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/api/booking 2>/dev/null)
+                        [ -z "$BOOKING" ] && BOOKING="000"
+                        INVOICE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5002/api/invoice 2>/dev/null)
+                        [ -z "$INVOICE" ] && INVOICE="000"
+                        SITE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5003/api/site 2>/dev/null)
+                        [ -z "$SITE" ] && SITE="000"
 
                         echo "Booking: $BOOKING | Invoice: $INVOICE | Site: $SITE"
 
@@ -147,10 +174,12 @@ pipeline {
                             echo "All services healthy!"
                             break
                         fi
+                        echo "Waiting for services... ($i/20)"
                         sleep 10
                     done
 
                     echo ""
+                    echo "=== Final Service Status ==="
                     docker stack services ${STACK_NAME}
                 '''
             }
