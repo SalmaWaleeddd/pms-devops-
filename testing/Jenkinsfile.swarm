@@ -6,7 +6,7 @@ pipeline {
 
     environment {
         STACK_NAME = 'pms'
-        SWARM_MANAGER = credentials('swarm-manager-ssh')  // Configure in Jenkins credentials
+      // Configure in Jenkins credentials
     }
 
     stages {
