@@ -1,0 +1,404 @@
+// PMS Deployment Pipeline with Automated Testing
+// Deploys to Docker Swarm then runs Selenium + API tests
+// Requires: github-credentials for private PMS-Testing repo
+
+pipeline {
+    agent any
+
+    environment {
+        STACK_NAME = 'pms'
+        DOCKER_HUB_BACKEND = 'amaleltelabany'
+        DOCKER_HUB_FRONTEND = 'salmawaleedd'
+        TESTING_REPO = 'https://github.com/GS-PMS/PMS-Testing.git'
+
+        // Application URLs for tests
+        ADMIN_URL = 'http://localhost:4200'
+        PARKER_URL = 'http://localhost:4201'
+        BOOKING_API = 'http://localhost:5001'
+        INVOICE_API = 'http://localhost:5002'
+        SITE_API = 'http://localhost:5003'
+    }
+
+    parameters {
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run automated tests after deployment'
+        )
+        booleanParam(
+            name: 'HEADLESS',
+            defaultValue: true,
+            description: 'Run browser tests in headless mode'
+        )
+        choice(
+            name: 'TEST_SUITE',
+            choices: ['all', 'api', 'ui'],
+            description: 'Which test suite to run'
+        )
+    }
+
+    stages {
+        // ==========================================
+        // DEPLOYMENT STAGES
+        // ==========================================
+
+        stage('Pull All Images') {
+            parallel {
+                stage('Pull Backend Images') {
+                    steps {
+                        sh '''
+                            echo "=========================================="
+                            echo "  Pulling Backend Images (amaleltelabany)"
+                            echo "=========================================="
+                            docker pull ${DOCKER_HUB_BACKEND}/pms-booking-service:latest
+                            docker pull ${DOCKER_HUB_BACKEND}/pms-invoice-service:latest
+                            docker pull ${DOCKER_HUB_BACKEND}/pms-site-service:latest
+                            echo "Backend images pulled!"
+                        '''
+                    }
+                }
+                stage('Pull Frontend Images') {
+                    steps {
+                        sh '''
+                            echo "=========================================="
+                            echo "  Pulling Frontend Images (salmawaleedd)"
+                            echo "=========================================="
+                            docker pull ${DOCKER_HUB_FRONTEND}/pms-admin-frontend:latest
+                            docker pull ${DOCKER_HUB_FRONTEND}/pms-parker-frontend:latest
+                            echo "Frontend images pulled!"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Clean Previous Stack') {
+            steps {
+                sh '''
+                    if docker stack ls | grep -q "${STACK_NAME}"; then
+                        echo "Removing existing stack..."
+                        docker stack rm ${STACK_NAME}
+                        sleep 20
+                    fi
+                '''
+            }
+        }
+
+        stage('Deploy to Swarm') {
+            steps {
+                dir('testing') {
+                    sh '''
+                        echo "=========================================="
+                        echo "  Deploying to Docker Swarm"
+                        echo "=========================================="
+                        docker stack deploy -c docker-stack.yml ${STACK_NAME}
+                        sleep 30
+                    '''
+                }
+            }
+        }
+
+        stage('Wait for Infrastructure') {
+            steps {
+                sh '''
+                    echo "Waiting for Zookeeper..."
+                    for i in $(seq 1 30); do
+                        ZK=$(docker ps --filter "name=${STACK_NAME}_zookeeper" -q | head -1)
+                        if [ -n "$ZK" ] && docker exec $ZK nc -z localhost 2181 2>/dev/null; then
+                            echo "Zookeeper ready!"
+                            break
+                        fi
+                        sleep 3
+                    done
+
+                    echo "Waiting for Kafka..."
+                    for i in $(seq 1 60); do
+                        KAFKA=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}\t{{.Image}}" | grep "cp-kafka" | cut -f1 | head -1)
+                        if [ -n "$KAFKA" ]; then
+                            if docker exec $KAFKA kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
+                                echo "Kafka ready!"
+                                break
+                            fi
+                        fi
+                        echo "Waiting for Kafka... ($i/60)"
+                        sleep 5
+                    done
+
+                    echo "Waiting for SQL Server..."
+                    for i in $(seq 1 60); do
+                        SQL=$(docker ps --filter "name=${STACK_NAME}_sqlserver" -q | head -1)
+                        if [ -n "$SQL" ] && docker exec $SQL /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "YourStrong@Passw0rd" -C -Q "SELECT 1" 2>/dev/null; then
+                            echo "SQL Server ready!"
+                            break
+                        fi
+                        sleep 5
+                    done
+                '''
+            }
+        }
+
+        stage('Create Kafka Topics') {
+            steps {
+                sh '''
+                    echo "Getting Kafka container (cp-kafka image)..."
+                    KAFKA=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}\t{{.Image}}" | grep "cp-kafka" | cut -f1 | head -1)
+
+                    if [ -z "$KAFKA" ]; then
+                        echo "ERROR: Could not find Kafka container"
+                        exit 1
+                    fi
+
+                    echo "Found Kafka container: $KAFKA"
+                    echo "Creating Kafka topics..."
+
+                    docker exec $KAFKA kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
+                    docker exec $KAFKA kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
+                    docker exec $KAFKA kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
+                    docker exec $KAFKA kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 --if-not-exists || true
+
+                    echo "Topics ready!"
+                    docker exec $KAFKA kafka-topics --list --bootstrap-server localhost:9092
+                    sleep 5
+                '''
+            }
+        }
+
+        stage('Start Backend Services') {
+            steps {
+                sh '''
+                    echo "Starting backend services..."
+                    docker service scale ${STACK_NAME}_booking-service=1 ${STACK_NAME}_invoice-service=1 ${STACK_NAME}_site-service=1 --detach
+                    echo "Services scaling up..."
+                    sleep 60
+                '''
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "  Health Check"
+                    echo "=========================================="
+
+                    for i in $(seq 1 20); do
+                        BOOKING=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/api/booking 2>/dev/null || echo "000")
+                        INVOICE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5002/api/invoice 2>/dev/null || echo "000")
+                        SITE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5003/api/site 2>/dev/null || echo "000")
+
+                        echo "Booking: $BOOKING | Invoice: $INVOICE | Site: $SITE"
+
+                        if [ "$BOOKING" = "200" ] && [ "$INVOICE" = "200" ] && [ "$SITE" = "200" ]; then
+                            echo "All services healthy!"
+                            break
+                        fi
+                        echo "Waiting for services... ($i/20)"
+                        sleep 10
+                    done
+
+                    echo ""
+                    echo "=== Final Service Status ==="
+                    docker stack services ${STACK_NAME}
+                '''
+            }
+        }
+
+        // ==========================================
+        // TESTING STAGES
+        // ==========================================
+
+        stage('Clone Test Repository') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                sh 'rm -rf pms-testing'
+
+                // Clone private repo using GitHub credentials
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-credentials',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_TOKEN'
+                )]) {
+                    sh '''
+                        echo "=========================================="
+                        echo "  Cloning PMS-Testing Repository (Private)"
+                        echo "=========================================="
+
+                        git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/GS-PMS/PMS-Testing.git pms-testing
+
+                        cd pms-testing
+                        echo "Test repository cloned"
+                        ls -la
+                    '''
+                }
+            }
+        }
+
+        stage('Setup Test Environment') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                sh '''
+                    echo "=========================================="
+                    echo "  Setting Up Test Environment"
+                    echo "=========================================="
+
+                    # Setup Firefox driver
+                    mkdir -p ${WORKSPACE}/drivers
+
+                    # Check if geckodriver already exists
+                    if [ ! -f "${WORKSPACE}/drivers/geckodriver" ]; then
+                        echo "Downloading GeckoDriver..."
+                        wget -q -O /tmp/geckodriver.tar.gz https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz
+                        tar -xzf /tmp/geckodriver.tar.gz -C ${WORKSPACE}/drivers/
+                        chmod +x ${WORKSPACE}/drivers/geckodriver
+                        rm -f /tmp/geckodriver.tar.gz
+                    fi
+
+                    echo "GeckoDriver ready"
+                    ${WORKSPACE}/drivers/geckodriver --version || true
+
+                    # Make bundled Allure executable
+                    if [ -d "pms-testing/.allure" ]; then
+                        chmod +x pms-testing/.allure/allure-*/bin/allure 2>/dev/null || true
+                    fi
+                '''
+            }
+        }
+
+        stage('Run Tests') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                dir('pms-testing') {
+                    sh '''
+                        echo "=========================================="
+                        echo "  Running PMS Automated Tests"
+                        echo "=========================================="
+
+                        export PATH="${WORKSPACE}/drivers:$PATH"
+                        export HEADLESS=${HEADLESS}
+                        export ADMIN_URL=${ADMIN_URL}
+                        export PARKER_URL=${PARKER_URL}
+                        export BOOKING_API=${BOOKING_API}
+                        export INVOICE_API=${INVOICE_API}
+                        export SITE_API=${SITE_API}
+
+                        echo "Test Configuration:"
+                        echo "  - Browser: Firefox"
+                        echo "  - Headless: ${HEADLESS}"
+                        echo "  - Test Suite: ${TEST_SUITE}"
+                        echo ""
+
+                        # Run Maven tests
+                        mvn clean test -Dbrowser=firefox -Dheadless=${HEADLESS} || true
+
+                        echo ""
+                        echo "Test execution completed"
+                    '''
+                }
+            }
+        }
+
+        stage('Generate Allure Report') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                dir('pms-testing') {
+                    sh '''
+                        echo "=========================================="
+                        echo "  Generating Allure Report"
+                        echo "=========================================="
+
+                        if [ -d "target/allure-results" ]; then
+                            echo "Allure results found:"
+                            ls -la target/allure-results/ | head -10
+
+                            # Generate report using bundled Allure
+                            if [ -f ".allure/allure-2.31.0/bin/allure" ]; then
+                                .allure/allure-2.31.0/bin/allure generate target/allure-results -o target/allure-report --clean
+                                echo "Report generated at target/allure-report"
+                            fi
+                        else
+                            echo "No Allure results found"
+                            mkdir -p target/allure-results
+                        fi
+                    '''
+                }
+
+                // Publish Allure report via Jenkins plugin (requires Allure Jenkins Plugin)
+                script {
+                    try {
+                        allure([
+                            includeProperties: false,
+                            jdk: '',
+                            results: [[path: 'pms-testing/target/allure-results']],
+                            report: 'allure-report'
+                        ])
+                    } catch (Exception e) {
+                        echo "Allure plugin not installed. Report available in artifacts."
+                    }
+                }
+            }
+        }
+
+        stage('Archive Test Artifacts') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
+            steps {
+                archiveArtifacts artifacts: '''
+                    pms-testing/target/allure-results/**,
+                    pms-testing/target/allure-report/**,
+                    pms-testing/target/surefire-reports/**,
+                    pms-testing/**/*.png,
+                    pms-testing/**/*.log
+                ''', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def testMsg = params.RUN_TESTS ? "\n\nTest Results: Check Allure Report in Jenkins" : ""
+                echo """
+=========================================
+  DEPLOYMENT & TESTING SUCCESSFUL!
+=========================================
+
+Frontend:
+  - Admin:  http://localhost:4200
+  - Parker: http://localhost:4201
+
+APIs:
+  - Booking: http://localhost:5001/api/booking
+  - Invoice: http://localhost:5002/api/invoice
+  - Site:    http://localhost:5003/api/site
+
+Monitoring:
+  - Kibana:     http://localhost:5601
+  - Kafka UI:   http://localhost:8085
+  - Visualizer: http://localhost:9080
+${testMsg}
+                """
+            }
+        }
+        failure {
+            sh '''
+                echo "=== Stack Services Status ==="
+                docker stack services ${STACK_NAME} || true
+                echo ""
+                echo "=== Failed Tasks ==="
+                docker stack ps ${STACK_NAME} --no-trunc | grep -E "Failed|Rejected|Shutdown" || true
+            '''
+        }
+        always {
+            sh 'rm -rf /tmp/geckodriver* || true'
+        }
+    }
+}

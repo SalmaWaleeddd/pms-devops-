@@ -200,7 +200,7 @@ services:
   parker-frontend:
     image: salmawaleedd/pms-parker-frontend:latest
     ports:
-      - "4201:3000"
+      - "4201:80"
     networks:
       - pms-network
     deploy:
