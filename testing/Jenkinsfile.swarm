@@ -75,7 +75,7 @@ pipeline {
                     for i in $(seq 1 30); do
                         KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
                         if [ -n "$KAFKA_CONTAINER" ]; then
-                            if docker exec $KAFKA_CONTAINER kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
+                            if docker exec $KAFKA_CONTAINER /bin/kafka-topics --list --bootstrap-server localhost:9092 2>/dev/null; then
                                 echo "Kafka is ready!"
                                 break
                             fi
@@ -104,10 +104,10 @@ pipeline {
                     KAFKA_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_kafka" --format "{{.ID}}" | head -1)
 
                     echo "Creating Kafka topics..."
-                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
-                    docker exec $KAFKA_CONTAINER kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic site-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic booking-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic ticket-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
+                    docker exec $KAFKA_CONTAINER /bin/kafka-topics --create --topic invoice-created --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092 2>/dev/null || echo "topic exists"
                 '''
             }
         }
@@ -132,24 +132,37 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
-                    echo "Waiting for backend services..."
-                    sleep 30
+                    echo "Waiting for backend services to be ready..."
+                    sleep 60
 
-                    FRONTEND_CONTAINER=$(docker ps --filter "name=${STACK_NAME}_admin-frontend" --format "{{.ID}}" | head -1)
+                    echo "Checking backend service replicas..."
+                    docker stack services ${STACK_NAME} | grep -E "(booking|invoice|site)-service"
 
-                    echo "Testing API endpoints..."
+                    echo ""
+                    echo "Testing API endpoints from host..."
                     for i in $(seq 1 30); do
-                        BOOKING_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://booking-service:8080/api/booking 2>&1 && echo "1" || echo "0")
-                        INVOICE_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://invoice-service:8080/api/invoice 2>&1 && echo "1" || echo "0")
-                        SITE_OK=$(docker exec $FRONTEND_CONTAINER wget -q --spider http://site-service:8080/api/site 2>&1 && echo "1" || echo "0")
+                        BOOKING_OK=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5001/api/booking 2>/dev/null || echo "000")
+                        INVOICE_OK=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5002/api/invoice 2>/dev/null || echo "000")
+                        SITE_OK=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5003/api/site 2>/dev/null || echo "000")
 
-                        if [ "$BOOKING_OK" = "1" ] && [ "$INVOICE_OK" = "1" ] && [ "$SITE_OK" = "1" ]; then
+                        echo "  Booking API (5001): $BOOKING_OK | Invoice API (5002): $INVOICE_OK | Site API (5003): $SITE_OK"
+
+                        if [ "$BOOKING_OK" = "200" ] && [ "$INVOICE_OK" = "200" ] && [ "$SITE_OK" = "200" ]; then
                             echo "All services are healthy!"
                             break
                         fi
-                        echo "Waiting... ($i/30)"
-                        sleep 5
+                        echo "Waiting for services... ($i/30)"
+                        sleep 10
                     done
+
+                    echo ""
+                    echo "Backend service logs (last 10 lines each):"
+                    echo "=== Booking Service ==="
+                    docker service logs ${STACK_NAME}_booking-service --tail 10 2>/dev/null || echo "No logs available"
+                    echo "=== Invoice Service ==="
+                    docker service logs ${STACK_NAME}_invoice-service --tail 10 2>/dev/null || echo "No logs available"
+                    echo "=== Site Service ==="
+                    docker service logs ${STACK_NAME}_site-service --tail 10 2>/dev/null || echo "No logs available"
                 '''
             }
         }
@@ -171,7 +184,7 @@ pipeline {
                 echo "  Kibana:           http://<VM_IP>:5601"
                 echo "  Elasticsearch:    http://<VM_IP>:9200"
                 echo "  Kafka UI:         http://<VM_IP>:8085"
-                echo "  Swarm Visualizer: http://<VM_IP>:8080"
+                echo "  Swarm Visualizer: http://<VM_IP>:9080"
                 echo ""
                 echo "API Endpoints:"
                 echo "  Booking API:      http://<VM_IP>:5001/api/booking"
