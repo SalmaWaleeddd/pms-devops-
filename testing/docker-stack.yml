@@ -143,7 +143,7 @@ services:
     healthcheck:
       disable: true
     deploy:
-      replicas: 0
+      replicas: 1
       restart_policy:
         condition: on-failure
         delay: 30s
@@ -176,7 +176,7 @@ services:
     healthcheck:
       disable: true
     deploy:
-      replicas: 0
+      replicas: 1
       restart_policy:
         condition: on-failure
         delay: 30s
@@ -209,7 +209,7 @@ services:
     healthcheck:
       disable: true
     deploy:
-      replicas: 0
+      replicas: 1
       restart_policy:
         condition: on-failure
         delay: 30s
